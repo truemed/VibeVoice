@@ -36,6 +36,14 @@ from transformers import set_seed
 from vibevoice.modular.modeling_vibevoice_inference import VibeVoiceForConditionalGenerationInference
 from vibevoice.processor.vibevoice_processor import VibeVoiceProcessor
 from long_form_chunking import chunk_script_long_form
+from short_text_mode import (
+    SHORT_MODE_CANDIDATES,
+    build_short_text_template,
+    count_words,
+    extract_target_segment_from_template,
+    score_short_text_candidate,
+    should_use_short_text_mode,
+)
 
 
 SAMPLE_RATE = 24000
@@ -70,6 +78,8 @@ def format_script_with_speakers(script: str, num_speakers: int) -> str:
             speaker_id = len(formatted_lines) % num_speakers
             formatted_lines.append(f"Speaker {speaker_id}: {line}")
     return "\n".join(formatted_lines)
+
+
 
 
 class SimpleTtsServer:
@@ -155,80 +165,84 @@ class SimpleTtsServer:
                  disable_voice_cloning: bool,
                  reference_audio: Optional[np.ndarray],
                  output_tail_silence_sec: float = 0.1) -> str:
-        if seed is not None:
-            set_seed(seed)
-
         voice_samples = None
         if not disable_voice_cloning:
             if reference_audio is None:
                 raise ValueError("reference_audio is required when voice cloning is enabled")
             voice_samples = [reference_audio for _ in range(num_speakers)]
-
-        self.model.set_ddpm_inference_steps(num_steps=inference_steps)
-
-        formatted_script = format_script_with_speakers(script, num_speakers)
-        if not formatted_script:
-            raise ValueError("script is required")
-
-        scripts_to_generate = [formatted_script]
-        if long_form_strategy:
-            scripts_to_generate = chunk_script_long_form(formatted_script)
-            if not scripts_to_generate:
-                raise ValueError("script is required")
-            print(f"Long-form strategy enabled: {len(scripts_to_generate)} chunk(s).")
-
-        generated_chunks: List[np.ndarray] = []
         target_device = self.device if self.device in ("cuda", "mps") else "cpu"
 
-        for idx, script_chunk in enumerate(scripts_to_generate, start=1):
-            inputs = self.processor(
-                text=[script_chunk],
-                voice_samples=[voice_samples] if voice_samples is not None else None,
-                padding=True,
-                return_tensors="pt",
-                return_attention_mask=True,
-            )
+        def synthesize_audio(raw_script: str,
+                            run_inference_steps: int,
+                            run_max_length_times: float,
+                            run_cfg_scale: float,
+                            run_seed: Optional[int]) -> np.ndarray:
+            if run_seed is not None:
+                set_seed(run_seed)
 
-            for k, v in inputs.items():
-                if torch.is_tensor(v):
-                    inputs[k] = v.to(target_device)
+            self.model.set_ddpm_inference_steps(num_steps=run_inference_steps)
 
-            outputs = self.model.generate(
-                **inputs,
-                max_new_tokens=max_new_tokens,
-                max_length_times=max_length_times,
-                cfg_scale=cfg_scale,
-                tokenizer=self.processor.tokenizer,
-                generation_config={"do_sample": False},
-                verbose=False,
-                is_prefill=not disable_voice_cloning,
-            )
+            formatted_script = format_script_with_speakers(raw_script, num_speakers)
+            if not formatted_script:
+                raise ValueError("script is required")
 
-            if getattr(outputs, "reach_max_step_sample", None) is not None:
-                if torch.any(outputs.reach_max_step_sample).item():
-                    print(
-                        f"Warning: chunk {idx} hit max-step cap. "
-                        "Try increasing max_length_times or max_new_tokens."
-                    )
+            scripts_to_generate = [formatted_script]
+            if long_form_strategy:
+                scripts_to_generate = chunk_script_long_form(formatted_script)
+                if not scripts_to_generate:
+                    raise ValueError("script is required")
+                print(f"Long-form strategy enabled: {len(scripts_to_generate)} chunk(s).")
 
-            if not outputs.speech_outputs or outputs.speech_outputs[0] is None:
-                raise RuntimeError(f"No audio output generated for chunk {idx}")
+            generated_chunks: List[np.ndarray] = []
+            for idx, script_chunk in enumerate(scripts_to_generate, start=1):
+                inputs = self.processor(
+                    text=[script_chunk],
+                    voice_samples=[voice_samples] if voice_samples is not None else None,
+                    padding=True,
+                    return_tensors="pt",
+                    return_attention_mask=True,
+                )
 
-            audio_chunk = outputs.speech_outputs[0]
-            if torch.is_tensor(audio_chunk):
-                if audio_chunk.dtype == torch.bfloat16:
-                    audio_chunk = audio_chunk.float()
-                audio_chunk = audio_chunk.detach().cpu().numpy().astype(np.float32)
-            audio_chunk = np.array(audio_chunk, dtype=np.float32).squeeze()
+                for k, v in inputs.items():
+                    if torch.is_tensor(v):
+                        inputs[k] = v.to(target_device)
 
-            if audio_chunk.size == 0:
-                raise RuntimeError(f"Generated empty audio for chunk {idx}")
+                outputs = self.model.generate(
+                    **inputs,
+                    max_new_tokens=max_new_tokens,
+                    max_length_times=run_max_length_times,
+                    cfg_scale=run_cfg_scale,
+                    tokenizer=self.processor.tokenizer,
+                    generation_config={"do_sample": False},
+                    verbose=False,
+                    is_prefill=not disable_voice_cloning,
+                )
 
-            generated_chunks.append(audio_chunk)
+                if getattr(outputs, "reach_max_step_sample", None) is not None:
+                    if torch.any(outputs.reach_max_step_sample).item():
+                        print(
+                            f"Warning: chunk {idx} hit max-step cap. "
+                            "Try increasing max_length_times or max_new_tokens."
+                        )
 
-        if len(generated_chunks) == 1:
-            audio = generated_chunks[0]
-        else:
+                if not outputs.speech_outputs or outputs.speech_outputs[0] is None:
+                    raise RuntimeError(f"No audio output generated for chunk {idx}")
+
+                audio_chunk = outputs.speech_outputs[0]
+                if torch.is_tensor(audio_chunk):
+                    if audio_chunk.dtype == torch.bfloat16:
+                        audio_chunk = audio_chunk.float()
+                    audio_chunk = audio_chunk.detach().cpu().numpy().astype(np.float32)
+                audio_chunk = np.array(audio_chunk, dtype=np.float32).squeeze()
+
+                if audio_chunk.size == 0:
+                    raise RuntimeError(f"Generated empty audio for chunk {idx}")
+
+                generated_chunks.append(audio_chunk)
+
+            if len(generated_chunks) == 1:
+                return generated_chunks[0]
+
             join_silence_samples = int((chunk_join_silence_ms / 1000.0) * SAMPLE_RATE)
             if join_silence_samples > 0:
                 join_silence = np.zeros(join_silence_samples, dtype=np.float32)
@@ -237,9 +251,39 @@ class SimpleTtsServer:
                     if idx > 0:
                         pieces.append(join_silence)
                     pieces.append(chunk)
-                audio = np.concatenate(pieces)
-            else:
-                audio = np.concatenate(generated_chunks)
+                return np.concatenate(pieces)
+
+            return np.concatenate(generated_chunks)
+
+        short_mode = should_use_short_text_mode(script, long_form_strategy=long_form_strategy)
+        if short_mode:
+            script_word_count = max(1, count_words(script))
+            wrapped_script = build_short_text_template(script)
+
+            candidates: List[tuple[float, np.ndarray]] = []
+            for idx in range(SHORT_MODE_CANDIDATES):
+                candidate_seed = (seed + idx) if seed is not None else int(np.random.randint(0, 2**31 - 1))
+                candidate_audio = synthesize_audio(
+                    raw_script=wrapped_script,
+                    run_inference_steps=inference_steps,
+                    run_max_length_times=max_length_times,
+                    run_cfg_scale=cfg_scale,
+                    run_seed=candidate_seed,
+                )
+                target_audio = extract_target_segment_from_template(candidate_audio)
+                candidate_score = score_short_text_candidate(target_audio, script_word_count)
+                candidates.append((candidate_score, target_audio))
+
+            candidates.sort(key=lambda x: x[0], reverse=True)
+            audio = candidates[0][1]
+        else:
+            audio = synthesize_audio(
+                raw_script=script,
+                run_inference_steps=inference_steps,
+                run_max_length_times=max_length_times,
+                run_cfg_scale=cfg_scale,
+                run_seed=seed,
+            )
 
         # Add a short configurable silence tail to avoid clipped sounding endings.
         if output_tail_silence_sec > 0:
