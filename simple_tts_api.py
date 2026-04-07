@@ -12,7 +12,7 @@ POST /generate (multipart/form-data) with fields:
 - seed (int, optional, default=-1)
 - long_form_strategy (bool, optional, default=false)
 - chunk_join_silence_ms (float, optional, default=100.0)
-- disable_voice_cloning (bool, optional, default=false)
+- disable_voice_cloning (bool, optional, default=true)
 - reference_audio (file, optional)
 
 Returns: WAV file (no streaming)
@@ -35,6 +35,7 @@ from transformers import set_seed
 
 from vibevoice.modular.modeling_vibevoice_inference import VibeVoiceForConditionalGenerationInference
 from vibevoice.processor.vibevoice_processor import VibeVoiceProcessor
+from bgm_artifact_detection import score_background_artifacts_in_silence
 from long_form_chunking import chunk_script_long_form
 from short_text_mode import (
     SHORT_MODE_CANDIDATES,
@@ -255,6 +256,11 @@ class SimpleTtsServer:
 
             return np.concatenate(generated_chunks)
 
+        def retry_seed(base_seed: Optional[int], offset: int = 7919) -> int:
+            if base_seed is None:
+                return int(np.random.randint(0, 2**31 - 1))
+            return int(base_seed + offset)
+
         short_mode = should_use_short_text_mode(script, long_form_strategy=long_form_strategy)
         if short_mode:
             script_word_count = max(1, count_words(script))
@@ -276,6 +282,20 @@ class SimpleTtsServer:
 
             candidates.sort(key=lambda x: x[0], reverse=True)
             audio = candidates[0][1]
+
+            artifact_score = score_background_artifacts_in_silence(audio)
+            if artifact_score >= 0.30:
+                retry_audio = synthesize_audio(
+                    raw_script=wrapped_script,
+                    run_inference_steps=inference_steps,
+                    run_max_length_times=max_length_times,
+                    run_cfg_scale=cfg_scale,
+                    run_seed=retry_seed(seed),
+                )
+                retry_target_audio = extract_target_segment_from_template(retry_audio)
+                retry_artifact_score = score_background_artifacts_in_silence(retry_target_audio)
+                if retry_artifact_score < artifact_score:
+                    audio = retry_target_audio
         else:
             audio = synthesize_audio(
                 raw_script=script,
@@ -284,6 +304,19 @@ class SimpleTtsServer:
                 run_cfg_scale=cfg_scale,
                 run_seed=seed,
             )
+
+            artifact_score = score_background_artifacts_in_silence(audio)
+            if artifact_score >= 0.30:
+                retry_audio = synthesize_audio(
+                    raw_script=script,
+                    run_inference_steps=inference_steps,
+                    run_max_length_times=max_length_times,
+                    run_cfg_scale=cfg_scale,
+                    run_seed=retry_seed(seed),
+                )
+                retry_artifact_score = score_background_artifacts_in_silence(retry_audio)
+                if retry_artifact_score < artifact_score:
+                    audio = retry_audio
 
         # Add a short configurable silence tail to avoid clipped sounding endings.
         if output_tail_silence_sec > 0:
@@ -319,7 +352,7 @@ async def generate_audio(
     seed: int = Form(-1),
     long_form_strategy: bool = Form(False),
     chunk_join_silence_ms: float = Form(100.0),
-    disable_voice_cloning: bool = Form(False),
+    disable_voice_cloning: bool = Form(True),
     output_tail_silence_sec: float = Form(0.1),
     reference_audio: Optional[UploadFile] = File(None),
 ):

@@ -6,7 +6,7 @@ import numpy as np
 
 SAMPLE_RATE = 24000
 
-SHORT_TEXT_WORD_THRESHOLD = 2
+SHORT_TEXT_WORD_THRESHOLD = 3
 SHORT_MODE_CANDIDATES = 2
 SHORT_MODE_BUFFER_BASE_TEXT = "This is a buffer"
 
@@ -29,7 +29,7 @@ def _get_target_terminal_punctuation(text: str) -> str:
     if not stripped:
         return "."
     last = stripped[-1]
-    if last in ("?", "!", "."):
+    if last in ("?", ",", "."):
         return last
     return "."
 
