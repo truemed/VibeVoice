@@ -1,0 +1,333 @@
+"""
+Simple TTS API server for VibeVoice.
+
+POST /generate (multipart/form-data) with fields:
+- script (str, required)
+- num_speakers (int, optional, default=1)
+- speaker_1..speaker_4 (str, optional)
+- cfg_scale (float, optional, default=1.3)
+- inference_steps (int, optional, default=10)
+- max_length_times (float, optional, default=2.0)
+- max_new_tokens (int, optional)
+- seed (int, optional, default=-1)
+- disable_voice_cloning (bool, optional, default=false)
+- reference_audio (file, optional)
+
+Returns: WAV file (no streaming)
+"""
+
+import argparse
+import os
+import tempfile
+from typing import List, Optional
+
+import librosa
+import numpy as np
+import soundfile as sf
+import torch
+torch.backends.nnpack.enabled = False
+from fastapi import FastAPI, File, Form, UploadFile
+from fastapi.responses import FileResponse
+from fastapi.background import BackgroundTasks
+from transformers import set_seed
+
+from vibevoice.modular.modeling_vibevoice_inference import VibeVoiceForConditionalGenerationInference
+from vibevoice.processor.vibevoice_processor import VibeVoiceProcessor
+
+
+SAMPLE_RATE = 24000
+
+
+def read_audio_file(file_path: str, target_sr: int = SAMPLE_RATE) -> np.ndarray:
+    wav, sr = sf.read(file_path)
+    if len(wav.shape) > 1:
+        wav = np.mean(wav, axis=1)
+    if sr != target_sr:
+        wav = librosa.resample(wav, orig_sr=sr, target_sr=target_sr)
+    return wav
+
+
+def convert_to_int16(data: np.ndarray) -> np.ndarray:
+    data = np.array(data, dtype=np.float32)
+    if np.max(np.abs(data)) > 1.0:
+        data = data / np.max(np.abs(data))
+    return (data * 32767).astype(np.int16)
+
+
+def format_script_with_speakers(script: str, num_speakers: int) -> str:
+    lines = [line.strip() for line in script.split("\n") if line.strip()]
+    if not lines:
+        return ""
+
+    formatted_lines = []
+    for line in lines:
+        if line.lower().startswith("speaker ") and ":" in line:
+            formatted_lines.append(line)
+        else:
+            speaker_id = len(formatted_lines) % num_speakers
+            formatted_lines.append(f"Speaker {speaker_id}: {line}")
+    return "\n".join(formatted_lines)
+
+
+class SimpleTtsServer:
+    def __init__(self, model_path: str, device: str, inference_steps: int):
+        self.model_path = model_path
+        self.device = device
+        self.inference_steps = inference_steps
+        self.processor = None
+        self.model = None
+        self._load_model()
+
+    def _load_model(self) -> None:
+        if self.device.lower() == "mpx":
+            self.device = "mps"
+        if self.device == "mps" and not torch.backends.mps.is_available():
+            self.device = "cpu"
+
+        self.processor = VibeVoiceProcessor.from_pretrained(self.model_path)
+
+        if self.device == "mps":
+            load_dtype = torch.float32
+            attn_impl = "sdpa"
+        elif self.device == "cuda":
+            load_dtype = torch.bfloat16
+            attn_impl = "flash_attention_2"
+        else:
+            load_dtype = torch.float32
+            attn_impl = "sdpa"
+
+        try:
+            if self.device == "mps":
+                self.model = VibeVoiceForConditionalGenerationInference.from_pretrained(
+                    self.model_path,
+                    torch_dtype=load_dtype,
+                    attn_implementation=attn_impl,
+                    device_map=None,
+                )
+                self.model.to("mps")
+            elif self.device == "cuda":
+                self.model = VibeVoiceForConditionalGenerationInference.from_pretrained(
+                    self.model_path,
+                    torch_dtype=load_dtype,
+                    attn_implementation=attn_impl,
+                    device_map="cuda",
+                )
+            else:
+                self.model = VibeVoiceForConditionalGenerationInference.from_pretrained(
+                    self.model_path,
+                    torch_dtype=load_dtype,
+                    attn_implementation=attn_impl,
+                    device_map="cpu",
+                )
+        except Exception as exc:
+            if attn_impl == "flash_attention_2":
+                fallback_attn = "sdpa"
+                print(f"Warning: {exc}")
+                print(f"Falling back to attention implementation: {fallback_attn}")
+                self.model = VibeVoiceForConditionalGenerationInference.from_pretrained(
+                    self.model_path,
+                    torch_dtype=load_dtype,
+                    attn_implementation=fallback_attn,
+                    device_map=(self.device if self.device in ("cuda", "cpu") else None),
+                )
+                if self.device == "mps":
+                    self.model.to("mps")
+            else:
+                raise
+
+        self.model.eval()
+        self.model.set_ddpm_inference_steps(num_steps=self.inference_steps)
+
+    def generate(self,
+                 script: str,
+                 num_speakers: int,
+                 speaker_names: List[Optional[str]],
+                 cfg_scale: float,
+                 inference_steps: int,
+                 max_length_times: float,
+                 max_new_tokens: Optional[int],
+                 seed: Optional[int],
+                 disable_voice_cloning: bool,
+                 reference_audio: Optional[np.ndarray],
+                 output_tail_silence_sec: float = 0.1) -> str:
+        if seed is not None:
+            set_seed(seed)
+
+        voice_samples = None
+        if not disable_voice_cloning:
+            if reference_audio is None:
+                raise ValueError("reference_audio is required when voice cloning is enabled")
+            voice_samples = [reference_audio for _ in range(num_speakers)]
+
+        self.model.set_ddpm_inference_steps(num_steps=inference_steps)
+
+        formatted_script = format_script_with_speakers(script, num_speakers)
+        if not formatted_script:
+            raise ValueError("script is required")
+
+        inputs = self.processor(
+            text=[formatted_script],
+            voice_samples=[voice_samples] if voice_samples is not None else None,
+            padding=True,
+            return_tensors="pt",
+            return_attention_mask=True,
+        )
+
+        target_device = self.device if self.device in ("cuda", "mps") else "cpu"
+        for k, v in inputs.items():
+            if torch.is_tensor(v):
+                inputs[k] = v.to(target_device)
+
+        outputs = self.model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            max_length_times=max_length_times,
+            cfg_scale=cfg_scale,
+            tokenizer=self.processor.tokenizer,
+            generation_config={"do_sample": False},
+            verbose=False,
+            is_prefill=not disable_voice_cloning,
+        )
+
+        if getattr(outputs, "reach_max_step_sample", None) is not None:
+            if torch.any(outputs.reach_max_step_sample).item():
+                print(
+                    "Warning: generation hit max-step cap for at least one sample. "
+                    "Try increasing max_length_times or max_new_tokens."
+                )
+
+        if not outputs.speech_outputs or outputs.speech_outputs[0] is None:
+            raise RuntimeError("No audio output generated")
+
+        audio = outputs.speech_outputs[0]
+        if torch.is_tensor(audio):
+            if audio.dtype == torch.bfloat16:
+                audio = audio.float()
+            audio = audio.detach().cpu().numpy().astype(np.float32)
+        audio = audio.squeeze()
+
+        # Add a short configurable silence tail to avoid clipped sounding endings.
+        if output_tail_silence_sec > 0:
+            pad_samples = int(SAMPLE_RATE * output_tail_silence_sec)
+            if pad_samples > 0:
+                audio = np.concatenate([audio, np.zeros(pad_samples, dtype=np.float32)])
+
+        audio_int16 = convert_to_int16(audio)
+
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+        tmp.close()
+        sf.write(tmp.name, audio_int16, SAMPLE_RATE, subtype="PCM_16")
+        return tmp.name
+
+
+app = FastAPI()
+server: Optional[SimpleTtsServer] = None
+
+
+@app.post("/generate")
+async def generate_audio(
+    background_tasks: BackgroundTasks,
+    script: str = Form(...),
+    num_speakers: int = Form(1),
+    speaker_1: Optional[str] = Form(None),
+    speaker_2: Optional[str] = Form(None),
+    speaker_3: Optional[str] = Form(None),
+    speaker_4: Optional[str] = Form(None),
+    cfg_scale: float = Form(1.3),
+    inference_steps: int = Form(10),
+    max_length_times: float = Form(2.0),
+    max_new_tokens: Optional[int] = Form(None),
+    seed: int = Form(-1),
+    disable_voice_cloning: bool = Form(False),
+    output_tail_silence_sec: float = Form(0.1),
+    reference_audio: Optional[UploadFile] = File(None),
+):
+    if server is None:
+        raise RuntimeError("Server not initialized")
+
+    if not script.strip():
+        raise ValueError("script is required")
+
+    if num_speakers < 1 or num_speakers > 4:
+        raise ValueError("num_speakers must be between 1 and 4")
+
+    if max_length_times <= 0:
+        raise ValueError("max_length_times must be > 0")
+
+    if max_new_tokens is not None and max_new_tokens <= 0:
+        raise ValueError("max_new_tokens must be > 0 when provided")
+
+    if output_tail_silence_sec < 0 or output_tail_silence_sec > 5:
+        raise ValueError("output_tail_silence_sec must be between 0 and 5")
+
+    speaker_names = [speaker_1, speaker_2, speaker_3, speaker_4][:num_speakers]
+
+    reference_audio_data = None
+    reference_audio_path = None
+    if reference_audio is not None:
+        filename = reference_audio.filename or "reference_audio"
+        _, ext = os.path.splitext(filename)
+        ext = ext.lower()
+        if ext not in (".wav", ".mp3"):
+            raise ValueError("reference_audio must be .wav or .mp3")
+
+        tmp_ref = tempfile.NamedTemporaryFile(delete=False, suffix=ext)
+        reference_audio_path = tmp_ref.name
+        tmp_ref.close()
+        file_bytes = await reference_audio.read()
+        with open(reference_audio_path, "wb") as out_f:
+            out_f.write(file_bytes)
+        reference_audio_data = read_audio_file(reference_audio_path)
+
+    seed_value = None if seed < 0 else int(seed)
+
+    wav_path = server.generate(
+        script=script,
+        num_speakers=num_speakers,
+        speaker_names=speaker_names,
+        cfg_scale=cfg_scale,
+        inference_steps=inference_steps,
+        max_length_times=max_length_times,
+        max_new_tokens=max_new_tokens,
+        seed=seed_value,
+        disable_voice_cloning=disable_voice_cloning,
+        reference_audio=reference_audio_data,
+        output_tail_silence_sec=output_tail_silence_sec,
+    )
+
+    background_tasks.add_task(lambda: os.remove(wav_path) if os.path.exists(wav_path) else None)
+    if reference_audio_path is not None:
+        background_tasks.add_task(lambda: os.remove(reference_audio_path) if os.path.exists(reference_audio_path) else None)
+    return FileResponse(wav_path, media_type="audio/wav", filename="output.wav")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Simple VibeVoice TTS API")
+    parser.add_argument("--model_path", required=True, help="Path or HF ID for VibeVoice model")
+    parser.add_argument(
+        "--device",
+        default=("cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")),
+        help="Device for inference: cuda | mps | cpu",
+    )
+    parser.add_argument("--inference_steps", type=int, default=10)
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8000)
+    return parser.parse_args()
+
+
+def main() -> None:
+    global server
+    args = parse_args()
+    server = SimpleTtsServer(
+        model_path=args.model_path,
+        device=args.device,
+        inference_steps=args.inference_steps,
+    )
+
+    import uvicorn
+
+    uvicorn.run(app, host=args.host, port=args.port)
+
+
+if __name__ == "__main__":
+    main()

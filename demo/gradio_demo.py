@@ -213,7 +213,8 @@ class VibeVoiceDemo:
                                  cfg_scale: float = 1.3,
                                  inference_steps: Optional[int] = None,
                                  seed: Optional[int] = None,
-                                 disable_voice_cloning: bool = False) -> Iterator[tuple]:
+                                 disable_voice_cloning: bool = False,
+                                 reference_audio_path: Optional[str] = None) -> Iterator[tuple]:
         try:
             
             # Reset stop flag and set generating state
@@ -289,13 +290,22 @@ class VibeVoiceDemo:
             voice_samples = None
             if voice_cloning_enabled:
                 voice_samples = []
-                for speaker_name in selected_speakers:
-                    audio_path = self.available_voices[speaker_name]
-                    audio_data = self.read_audio(audio_path)
+                if reference_audio_path:
+                    audio_data = self.read_audio(reference_audio_path)
                     if len(audio_data) == 0:
                         self.is_generating = False
-                        raise gr.Error(f"Error: Failed to load audio for {speaker_name}")
-                    voice_samples.append(audio_data)
+                        raise gr.Error("Error: Failed to load reference audio")
+                    for _ in selected_speakers:
+                        voice_samples.append(audio_data)
+                    log += "🎧 Using uploaded reference audio for voice cloning\n"
+                else:
+                    for speaker_name in selected_speakers:
+                        audio_path = self.available_voices[speaker_name]
+                        audio_data = self.read_audio(audio_path)
+                        if len(audio_data) == 0:
+                            self.is_generating = False
+                            raise gr.Error(f"Error: Failed to load audio for {speaker_name}")
+                        voice_samples.append(audio_data)
             
             # log += f"✅ Loaded {len(voice_samples)} voice samples\n"
             
@@ -740,6 +750,14 @@ def create_demo_interface(demo_instance: VibeVoiceDemo):
                         elem_classes="speaker-item"
                     )
                     speaker_selections.append(speaker)
+
+                # Optional reference audio (overrides presets when provided)
+                reference_audio = gr.Audio(
+                    label="Reference Audio (Optional)",
+                    sources=["upload"],
+                    type="filepath",
+                    elem_classes="reference-audio"
+                )
                 
                 # Advanced settings
                 gr.Markdown("### ⚙️ **Advanced Settings**")
@@ -891,7 +909,7 @@ Or paste text directly and it will auto-assign speakers.""",
         )
         
         # Main generation function with streaming
-        def generate_podcast_wrapper(num_speakers, script, speaker_1, speaker_2, speaker_3, speaker_4, cfg_scale, inference_steps, seed, disable_voice_cloning):
+        def generate_podcast_wrapper(num_speakers, script, speaker_1, speaker_2, speaker_3, speaker_4, reference_audio_path, cfg_scale, inference_steps, seed, disable_voice_cloning):
             """Wrapper function to handle the streaming generation call."""
             try:
                 speakers = [speaker_1, speaker_2, speaker_3, speaker_4]
@@ -909,6 +927,7 @@ Or paste text directly and it will auto-assign speakers.""",
                     speaker_2=speakers[1],
                     speaker_3=speakers[2],
                     speaker_4=speakers[3],
+                    reference_audio_path=reference_audio_path,
                     cfg_scale=cfg_scale,
                     inference_steps=inference_steps,
                     seed=seed,
@@ -960,8 +979,9 @@ Or paste text directly and it will auto-assign speakers.""",
             queue=False
         ).then(
             fn=generate_podcast_wrapper,
-            inputs=[num_speakers, script_input] + speaker_selections + [cfg_scale, inference_steps, seed, disable_voice_cloning],
+            inputs=[num_speakers, script_input] + speaker_selections + [reference_audio, cfg_scale, inference_steps, seed, disable_voice_cloning],
             outputs=[audio_output, complete_audio_output, log_output, streaming_status, generate_btn, stop_btn],
+            api_name="/generate",
             queue=True  # Enable Gradio's built-in queue
         )
         
@@ -1148,7 +1168,7 @@ def main():
             # server_port=args.port,
             server_name="0.0.0.0" if args.share else "127.0.0.1",
             show_error=True,
-            show_api=False  # Hide API docs for cleaner interface
+            show_api=True  # Enable API docs for programmatic access
         )
     except KeyboardInterrupt:
         print("\n🛑 Shutting down gracefully...")

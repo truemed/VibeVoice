@@ -1,0 +1,90 @@
+{
+  "info": {
+    "name": "VibeVoice Simple TTS API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://127.0.0.1:8000"
+    }
+  ],
+  "item": [
+    {
+      "name": "Generate (POST /generate)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "script",
+              "type": "text",
+              "value": "Hello!!"
+            },
+            {
+              "key": "num_speakers",
+              "type": "text",
+              "value": "2"
+            },
+            {
+              "key": "speaker_1",
+              "type": "text",
+              "value": "en-Alice_woman"
+            },
+            {
+              "key": "speaker_2",
+              "type": "text",
+              "value": "en-Carter_man"
+            },
+            {
+              "key": "speaker_3",
+              "type": "text",
+              "value": "en-Frank_man"
+            },
+            {
+              "key": "speaker_4",
+              "type": "text",
+              "value": "en-Maya_woman"
+            },
+            {
+              "key": "cfg_scale",
+              "type": "text",
+              "value": "1.3"
+            },
+            {
+              "key": "inference_steps",
+              "type": "text",
+              "value": "10"
+            },
+            {
+              "key": "seed",
+              "type": "text",
+              "value": "42"
+            },
+            {
+              "key": "disable_voice_cloning",
+              "type": "text",
+              "value": "false"
+            },
+            {
+              "key": "reference_audio",
+              "type": "file",
+              "src": ""
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/generate",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "generate"
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,222 @@
+{
+  "info": {
+    "name": "VibeVoice Gradio API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://127.0.0.1:7860"
+    },
+    {
+      "key": "uploadedPath",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "Upload Reference Audio (optional)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "file",
+              "type": "file",
+              "src": ""
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/gradio_api/upload",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "gradio_api",
+            "upload"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Save uploaded file path for the next request",
+              "const json = pm.response.json();",
+              "if (json && json[0]) {",
+              "  pm.collectionVariables.set('uploadedPath', json[0]);",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Update Speaker Visibility (POST /run/update_speaker_visibility)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"data\": [\n    2\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/gradio_api/run/update_speaker_visibility",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "gradio_api",
+            "run",
+            "update_speaker_visibility"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Clear Audio Outputs (POST /run/clear_audio_outputs)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"data\": []\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/gradio_api/run/clear_audio_outputs",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "gradio_api",
+            "run",
+            "clear_audio_outputs"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Generate (POST /run/generate)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"data\": [\n    2,\n    \"Hello!!\",\n    \"en-Alice_woman\",\n    \"en-Carter_man\",\n    \"en-Frank_man\",\n    \"en-Maya_woman\",\n    null,\n    1.3,\n    10,\n    42,\n    false\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/gradio_api/run/generate",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "gradio_api",
+            "run",
+            "generate"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Generate With Uploaded Reference (POST /run/generate)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"data\": [\n    2,\n    \"Hello!!\",\n    \"en-Alice_woman\",\n    \"en-Carter_man\",\n    \"en-Frank_man\",\n    \"en-Maya_woman\",\n    {\"path\": \"{{uploadedPath}}\"},\n    1.3,\n    10,\n    42,\n    false\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/gradio_api/run/generate",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "gradio_api",
+            "run",
+            "generate"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Stop Generation (POST /run/stop_generation_handler)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"data\": []\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/gradio_api/run/stop_generation_handler",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "gradio_api",
+            "run",
+            "stop_generation_handler"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Load Random Example (POST /run/load_random_example)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"data\": []\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/gradio_api/run/load_random_example",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "gradio_api",
+            "run",
+            "load_random_example"
+          ]
+        }
+      }
+    }
+  ]
+}
