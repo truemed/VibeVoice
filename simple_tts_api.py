@@ -13,6 +13,7 @@ POST /generate (multipart/form-data) with fields:
 - long_form_strategy (bool, optional, default=false)
 - chunk_join_silence_ms (float, optional, default=100.0)
 - disable_voice_cloning (bool, optional, default=true)
+- speech_rate (float, optional, default=1.0, range=0.7..1.3)
 - reference_audio (file, optional)
 
 Returns: WAV file (no streaming)
@@ -37,6 +38,7 @@ from vibevoice.modular.modeling_vibevoice_inference import VibeVoiceForCondition
 from vibevoice.processor.vibevoice_processor import VibeVoiceProcessor
 from bgm_artifact_detection import score_background_artifacts_in_silence
 from long_form_chunking import chunk_script_long_form
+from speech_rate_processing import apply_speech_rate, validate_speech_rate
 from short_text_mode import (
     SHORT_MODE_CANDIDATES,
     build_short_text_template,
@@ -164,6 +166,7 @@ class SimpleTtsServer:
                  long_form_strategy: bool,
                  chunk_join_silence_ms: float,
                  disable_voice_cloning: bool,
+                 speech_rate: float,
                  reference_audio: Optional[np.ndarray],
                  output_tail_silence_sec: float = 0.1) -> str:
         voice_samples = None
@@ -318,6 +321,13 @@ class SimpleTtsServer:
                 if retry_artifact_score < artifact_score:
                     audio = retry_audio
 
+        audio = apply_speech_rate(
+            audio=audio,
+            speech_rate=speech_rate,
+            sample_rate=SAMPLE_RATE,
+            prefer_pyrubberband=True,
+        )
+
         # Add a short configurable silence tail to avoid clipped sounding endings.
         if output_tail_silence_sec > 0:
             pad_samples = int(SAMPLE_RATE * output_tail_silence_sec)
@@ -353,6 +363,7 @@ async def generate_audio(
     long_form_strategy: bool = Form(False),
     chunk_join_silence_ms: float = Form(100.0),
     disable_voice_cloning: bool = Form(True),
+    speech_rate: float = Form(1.0),
     output_tail_silence_sec: float = Form(0.1),
     reference_audio: Optional[UploadFile] = File(None),
 ):
@@ -376,6 +387,8 @@ async def generate_audio(
 
     if chunk_join_silence_ms < 0 or chunk_join_silence_ms > 2000:
         raise ValueError("chunk_join_silence_ms must be between 0 and 2000")
+
+    validate_speech_rate(speech_rate)
 
     speaker_names = [speaker_1, speaker_2, speaker_3, speaker_4][:num_speakers]
 
@@ -410,6 +423,7 @@ async def generate_audio(
         long_form_strategy=long_form_strategy,
         chunk_join_silence_ms=chunk_join_silence_ms,
         disable_voice_cloning=disable_voice_cloning,
+        speech_rate=speech_rate,
         reference_audio=reference_audio_data,
         output_tail_silence_sec=output_tail_silence_sec,
     )

@@ -1,8 +1,8 @@
 import re
 from typing import List, Tuple
 
-DEFAULT_MIN_WORDS = 36
-DEFAULT_MAX_WORDS = 52
+DEFAULT_MIN_WORDS = 28
+DEFAULT_MAX_WORDS = 45
 
 _SPEAKER_LINE_RE = re.compile(r"^(Speaker\s+\d+\s*:\s*)(.*)$", re.IGNORECASE)
 
