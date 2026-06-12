@@ -1,0 +1,14 @@
+[Unit]
+Description=VibeVoice TTS API
+After=network.target
+
+[Service]
+Type=simple
+User=user
+WorkingDirectory=/home/user/Projects/VibeVoice
+ExecStart=/home/user/Projects/VibeVoice/.venv/bin/python simple_tts_api.py --model_path vibevoice/VibeVoice-1.5B --host 192.168.0.249 --port 8000 --device cuda
+Restart=always
+Environment=TORCH_DISABLE_NNPACK=1
+
+[Install]
+WantedBy=multi-user.target

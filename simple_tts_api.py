@@ -40,11 +40,8 @@ from bgm_artifact_detection import score_background_artifacts_in_silence
 from long_form_chunking import chunk_script_long_form
 from speech_rate_processing import apply_speech_rate, validate_speech_rate
 from short_text_mode import (
-    SHORT_MODE_CANDIDATES,
     build_short_text_template,
-    count_words,
     extract_target_segment_from_template,
-    score_short_text_candidate,
     should_use_short_text_mode,
 )
 
@@ -266,25 +263,15 @@ class SimpleTtsServer:
 
         short_mode = should_use_short_text_mode(script, long_form_strategy=long_form_strategy)
         if short_mode:
-            script_word_count = max(1, count_words(script))
             wrapped_script = build_short_text_template(script)
-
-            candidates: List[tuple[float, np.ndarray]] = []
-            for idx in range(SHORT_MODE_CANDIDATES):
-                candidate_seed = (seed + idx) if seed is not None else int(np.random.randint(0, 2**31 - 1))
-                candidate_audio = synthesize_audio(
-                    raw_script=wrapped_script,
-                    run_inference_steps=inference_steps,
-                    run_max_length_times=max_length_times,
-                    run_cfg_scale=cfg_scale,
-                    run_seed=candidate_seed,
-                )
-                target_audio = extract_target_segment_from_template(candidate_audio)
-                candidate_score = score_short_text_candidate(target_audio, script_word_count)
-                candidates.append((candidate_score, target_audio))
-
-            candidates.sort(key=lambda x: x[0], reverse=True)
-            audio = candidates[0][1]
+            single_audio = synthesize_audio(
+                raw_script=wrapped_script,
+                run_inference_steps=inference_steps,
+                run_max_length_times=max_length_times,
+                run_cfg_scale=cfg_scale,
+                run_seed=seed,
+            )
+            audio = extract_target_segment_from_template(single_audio)
 
             artifact_score = score_background_artifacts_in_silence(audio)
             if artifact_score >= 0.30:
